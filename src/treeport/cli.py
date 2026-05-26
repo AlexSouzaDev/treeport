@@ -90,7 +90,11 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 def _repo_root() -> Path:
     import git
 
-    return Path(git.Repo(".", search_parent_directories=True).working_dir)
+    try:
+        return Path(git.Repo(".", search_parent_directories=True).working_dir)
+    except git.InvalidGitRepositoryError:
+        rprint("[bold red]Error:[/] Not inside a git repository. Run treeport from within a git repo.")
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------- #

@@ -92,7 +92,11 @@ def resolve_prompt(
     prompt_args: dict[str, str],
     cwd: str | Path | None = None,
 ) -> str:
-    """Full resolution pipeline: load → substitute args → expand shell expressions."""
+    """Full resolution pipeline: load → expand shell expressions → substitute args.
+
+    Shell expansion runs first so that prompt_args values are never interpreted
+    as shell syntax — preventing injection via metacharacters like ``$(cmd)``.
+    """
     raw = load_prompt(prompt, prompt_file)
-    after_args = substitute_args(raw, prompt_args)
-    return expand_shell_expressions(after_args, cwd=cwd)
+    after_shell = expand_shell_expressions(raw, cwd=cwd)
+    return substitute_args(after_shell, prompt_args)

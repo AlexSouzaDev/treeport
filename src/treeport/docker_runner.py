@@ -13,6 +13,7 @@ entirely in the agent providers under treeport/agents/.
 from __future__ import annotations
 
 from pathlib import Path
+from types import TracebackType
 
 import docker  # type: ignore
 from docker.errors import ImageNotFound  # type: ignore
@@ -39,6 +40,20 @@ class ContainerRunner:
         self.image_name = image_name
         self.worktree_path = worktree_path
         self.env = env or {}
+
+    def close(self) -> None:
+        self.client.close()
+
+    def __enter__(self) -> "ContainerRunner":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     # Image helpers
@@ -78,15 +93,22 @@ class ContainerRunner:
     def run_hooks(self, hooks: list[Hook]) -> None:
         """Run each hook command sequentially inside a short-lived container."""
         for hook in hooks:
-            result = self.client.containers.run(
-                self.image_name,
-                command=["sh", "-c", hook.command],
-                volumes=self._volume_spec(),
-                working_dir=_AGENT_WORKDIR,
-                environment=self.env,
-                remove=True,
-                user=_AGENT_USER,
-            )
+            try:
+                result = self.client.containers.run(
+                    self.image_name,
+                    command=["sh", "-c", hook.command],
+                    volumes=self._volume_spec(),
+                    working_dir=_AGENT_WORKDIR,
+                    environment=self.env,
+                    remove=True,
+                    user=_AGENT_USER,
+                )
+            except docker.errors.ContainerError as exc:
+                desc = hook.description or hook.command
+                raise RuntimeError(
+                    f"on_sandbox_ready hook failed: {desc!r}\n"
+                    f"stderr: {exc.stderr.decode(errors='replace') if exc.stderr else ''}"
+                ) from exc
             if isinstance(result, bytes) and result.strip():
                 print(result.decode(errors="replace").strip())
 
@@ -115,6 +137,7 @@ class ContainerRunner:
         # Write the prompt to disk so the command can read it without
         # shell-escaping issues.
         prompt_path = worktree_path / ".treeport_prompt.md"
+        container = None
 
         try:
             container = self.client.containers.run(
@@ -139,9 +162,10 @@ class ContainerRunner:
                     signal_detected = True
 
             container.wait()
-            container.remove(force=True)
 
         finally:
+            if container is not None:
+                container.remove(force=True)
             prompt_path.unlink(missing_ok=True)
 
         return "".join(stdout_lines), signal_detected
@@ -187,7 +211,10 @@ class ContainerRunner:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            env[key.strip()] = value.strip().strip('"').strip("'")
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            env[key.strip()] = value
         return env
 
     # ------------------------------------------------------------------

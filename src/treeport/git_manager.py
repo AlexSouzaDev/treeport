@@ -10,12 +10,15 @@ Flow:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
 import git
+
+_log = logging.getLogger(__name__)
 
 
 class WorktreeManager:
@@ -61,12 +64,12 @@ class WorktreeManager:
     def get_new_commits(self) -> list[dict[str, str]]:
         """Return commits on the temp branch not present on the base HEAD."""
         base = self.repo.commit("HEAD")
-        worktree_repo = git.Repo(self._worktree_path)
-        commits = list(
-            worktree_repo.iter_commits(
-                f"{base.hexsha}..{self._temp_branch}"
+        with git.Repo(self._worktree_path) as worktree_repo:
+            commits = list(
+                worktree_repo.iter_commits(
+                    f"{base.hexsha}..{self._temp_branch}"
+                )
             )
-        )
         return [
             {"sha": c.hexsha, "message": c.message.strip()}
             for c in reversed(commits)
@@ -74,8 +77,8 @@ class WorktreeManager:
 
     def merge_back(self) -> None:
         """Fast-forward merge the temp branch into ``target_branch``."""
-        worktree_repo = git.Repo(self._worktree_path)
-        temp_sha = worktree_repo.head.commit.hexsha
+        with git.Repo(self._worktree_path) as worktree_repo:
+            temp_sha = worktree_repo.head.commit.hexsha
 
         # Ensure target branch exists (create from temp tip if brand-new)
         if self.target_branch not in [b.name for b in self.repo.branches]:
@@ -90,12 +93,12 @@ class WorktreeManager:
             return
         try:
             self.repo.git.worktree("remove", "--force", str(self._worktree_path))
-        except git.GitCommandError:
-            pass
+        except git.GitCommandError as exc:
+            _log.warning("Failed to remove worktree %s: %s", self._worktree_path, exc)
         try:
             self.repo.git.branch("-D", self._temp_branch)
-        except git.GitCommandError:
-            pass
+        except git.GitCommandError as exc:
+            _log.warning("Failed to delete temp branch %s: %s", self._temp_branch, exc)
         self._cleaned_up = True
 
     # ------------------------------------------------------------------
@@ -104,9 +107,15 @@ class WorktreeManager:
 
     @contextmanager
     def session(self) -> Generator["WorktreeManager", None, None]:
-        """Context manager that creates and cleans up the worktree automatically."""
+        """Context manager that creates, merges back, and cleans up the worktree.
+
+        On success the worktree branch is merged into ``target_branch`` before
+        cleanup.  On exception the merge is skipped so partial work is not
+        promoted, but cleanup still runs.
+        """
         self.create()
         try:
             yield self
+            self.merge_back()
         finally:
             self.cleanup()

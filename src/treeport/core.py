@@ -21,6 +21,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import warnings
 from pathlib import Path
@@ -79,7 +80,13 @@ async def run(options: RunOptions | dict) -> RunResult:
     # ------------------------------------------------------------------ #
     import git as _git
 
-    repo = _git.Repo(".", search_parent_directories=True)
+    try:
+        repo = _git.Repo(".", search_parent_directories=True)
+    except _git.InvalidGitRepositoryError as exc:
+        raise RuntimeError(
+            "treeport must be run from inside a git repository. "
+            f"No .git directory found above '{Path('.').resolve()}'."
+        ) from exc
     repo_root = Path(repo.working_dir)
 
     # ------------------------------------------------------------------ #
@@ -114,7 +121,6 @@ async def run(options: RunOptions | dict) -> RunResult:
 
     # Warn about missing required env vars
     for var in provider.required_env_vars():
-        import os
         if not env.get(var) and not os.environ.get(var):
             warnings.warn(
                 f"Required env var '{var}' for {agent_type!r} is not set. "
@@ -176,7 +182,7 @@ async def run(options: RunOptions | dict) -> RunResult:
         # ---------------------------------------------------------------- #
         if options.hooks.on_sandbox_ready and runner:
             logger._write("Running on_sandbox_ready hooks…", style="cyan")
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 None, lambda: runner.run_hooks(options.hooks.on_sandbox_ready)
             )
 
